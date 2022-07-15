@@ -77,7 +77,7 @@
 #define BLACKBIT	5  /* object is black */
 #define FINALIZEDBIT	6  /* object has been marked for finalization */
 
-#define TESTBIT		7
+#define EPHEMERONKEYBIT 7 /* object is a key for a ephemeron table which can be found by following gclist */
 
 
 
@@ -101,6 +101,7 @@
 
 #define luaC_white(g)	cast_byte((g)->currentwhite & WHITEBITS)
 
+#define isephemeronkey(x) testbit((x)->marked, EPHEMERONKEYBIT)
 
 /* object age in generational mode */
 #define G_NEW		0	/* created in current cycle */

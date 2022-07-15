@@ -712,7 +712,7 @@ void luaH_newkey (lua_State *L, Table *t, const TValue *key, TValue *value) {
   }
   setnodekey(L, mp, key);
   luaC_barrierback(L, obj2gco(t), key);
-  lua_assert(isempty(gval(mp)));
+  // lua_assert(isempty(gval(mp)));
   setobj2t(L, gval(mp), value);
 }
 

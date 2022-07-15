@@ -471,6 +471,7 @@ typedef struct Udata0 {
   unsigned short nuvalue;  /* number of user values */
   size_t len;  /* number of bytes */
   struct Table *metatable;
+  GCObject *gclist;
   union {LUAI_MAXALIGN;} bindata;
 } Udata0;
 
