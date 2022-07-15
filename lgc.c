@@ -143,7 +143,9 @@ static GCObject **getgclist (GCObject *o) {
 
 static void linkgclist_ (GCObject *o, GCObject **pnext, GCObject **list) {
   lua_assert(!isgray(o));  /* cannot be in a gray list */
+#ifndef LUA_DEBUG
   lua_assert(!isephemeronkey(o));
+#endif
   *pnext = *list;
   *list = o;
   set2gray(o);  /* now it is */
@@ -317,6 +319,10 @@ static GCObject** findlastephemeronkeyentry(GCObject *o) {
 
 static void markephemeronkey(global_State *g, GCObject *o) {
   GCObject* link = *getgclist(o);
+
+  lua_assert(g->gcstate == GCSatomic);
+  lua_assert(isephemeronkey(o) && iswhite(o));
+  
   resetbit(o->marked, EPHEMERONKEYBIT);
   set2gray(o);
   while(link) {
@@ -339,14 +345,14 @@ static void markephemeronkey(global_State *g, GCObject *o) {
         }
       }
     } else {
-      *getgclist(o) = g->grayagain;
-      g->grayagain = o;
+      *getgclist(o) = g->gray;
+      g->gray = o;
       o = (GCObject*) (((lu_byte*)link) - offsetof(GCObject, tt));
       link = *getgclist(o);
     }
   }
-  *getgclist(o) = g->grayagain;
-  g->grayagain = o;
+  *getgclist(o) = g->gray;
+  g->gray = o;
 }
 
 /*
@@ -508,6 +514,7 @@ static void traverseweakvalue (global_State *g, Table *h) {
 static void linkephemeronkey(Node *n) {
   GCObject* key = gckey(n);
   GCObject** gclist = getgclist(key);
+  lua_assert(n->u.key_tt & BIT_ISCOLLECTABLE);
   if (isephemeronkey(key)) {
     n->u.key_val.gc = *gclist;
   } else {
@@ -544,8 +551,7 @@ static int traverseephemeron (global_State *g, Table *h) {
     }
   }
   if (g->gcstate == GCSpropagate) {
-    /* traverse hash part; if 'inv', traverse descending
-      (see 'convergeephemerons') */
+    /* traverse hash part */
     for (i = 0; i < nsize; i++) {
       Node *n = gnode(h, i);
       if (isempty(gval(n)))  /* entry is empty? */
@@ -557,8 +563,8 @@ static int traverseephemeron (global_State *g, Table *h) {
     }
     linkgclist(h, g->grayagain);  /* must retraverse it in atomic phase */
   } else {
-    /* traverse hash part; if 'inv', traverse descending
-        (see 'convergeephemerons') */
+    lua_assert(g->gcstate == GCSatomic);
+    /* traverse hash part */
     for (i = 0; i < nsize; i++) {
       Node *n = gnode(h, i);
       if (isempty(gval(n)))  /* entry is empty? */
@@ -581,6 +587,15 @@ static int traverseephemeron (global_State *g, Table *h) {
   return marked;
 }
 
+static void markephemerons(global_State *g) {
+  GCObject* c = g->ephemeron;
+  g->ephemeron = NULL;
+  while(c) {
+    GCObject* next = *getgclist(c);
+    traverseephemeron(g, gco2t(c));
+    c = next;
+  }
+}
 
 
 
@@ -1555,7 +1570,6 @@ void luaC_freeallobjects (lua_State *L) {
   lua_assert(g->strt.nuse == 0);
 }
 
-
 static lu_mem atomic (lua_State *L) {
   global_State *g = G(L);
   lu_mem work = 0;
@@ -1565,6 +1579,7 @@ static lu_mem atomic (lua_State *L) {
   lua_assert(g->ephemeron == NULL && g->weak == NULL);
   lua_assert(!iswhite(g->mainthread));
   g->gcstate = GCSatomic;
+  markephemerons(g);
   markobject(g, L);  /* mark running thread */
   /* registry and global metatables may be changed by API */
   markvalue(g, &g->l_registry);

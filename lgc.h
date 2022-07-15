@@ -78,7 +78,7 @@
 #define FINALIZEDBIT	6  /* object has been marked for finalization */
 
 #define EPHEMERONKEYBIT 7 /* object is a key for a ephemeron table which can be found by following gclist */
-
+#define TESTBIT 7 /* Note: Clashes with EPHEMERONKEYBIT but this bit should not be set in the atomic phase while EPHEMERONKEYBIT is never set outside. */
 
 
 #define WHITEBITS	bit2mask(WHITE0BIT, WHITE1BIT)
