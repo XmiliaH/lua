@@ -457,29 +457,9 @@ typedef struct Udata {
 } Udata;
 
 
-/*
-** Header for userdata with no user values. These userdata do not need
-** to be gray during GC, and therefore do not need a 'gclist' field.
-** To simplify, the code always use 'Udata' for both kinds of userdata,
-** making sure it never accesses 'gclist' on userdata with no user values.
-** This structure here is used only to compute the correct size for
-** this representation. (The 'bindata' field in its end ensures correct
-** alignment for binary data following this header.)
-*/
-typedef struct Udata0 {
-  CommonHeader;
-  unsigned short nuvalue;  /* number of user values */
-  size_t len;  /* number of bytes */
-  struct Table *metatable;
-  GCObject *gclist;
-  union {LUAI_MAXALIGN;} bindata;
-} Udata0;
-
-
 /* compute the offset of the memory area of a userdata */
 #define udatamemoffset(nuv) \
-	((nuv) == 0 ? offsetof(Udata0, bindata)  \
-                    : offsetof(Udata, uv) + (sizeof(UValue) * (nuv)))
+	(offsetof(Udata, uv) + (sizeof(UValue) * (nuv)))
 
 /* get the address of the memory block inside 'Udata' */
 #define getudatamem(u)	(cast_charp(u) + udatamemoffset((u)->nuvalue))
@@ -690,6 +670,7 @@ typedef union Node {
   struct NodeKey {
     TValuefields;  /* fields for value */
     lu_byte key_tt;  /* key type */
+    lu_byte val_bak_tt;  /* backup of value tt if this is in an ephemeron key link */
     int next;  /* for chaining */
     Value key_val;  /* key value */
   } u;

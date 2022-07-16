@@ -567,7 +567,6 @@ static lu_mem checkgrays (global_State *g) {
   total += checkgraylist(g, g->grayagain);
   total += checkgraylist(g, g->weak);
   total += checkgraylist(g, g->allweak);
-  total += checkgraylist(g, g->ephemeron);
   return total;
 }
 

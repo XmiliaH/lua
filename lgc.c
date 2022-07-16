@@ -308,38 +308,39 @@ static void reallymarkobject0 (global_State *g, GCObject *o) {
   }
 }
 
-static GCObject** findlastephemeronkeyentry(GCObject *o) {
-  GCObject** last = getgclist(o);
+static void** findlastephemeronkeyentry(GCObject *o) {
+  void** last = (void**)getgclist(o);
   while(*last) {
     Node* n = (Node*) (((lu_byte*)*last) - offsetof(Node, u.key_tt));
-    last = &n->u.key_val.gc;
+    last = &keyval(n).p;
   }
   return last;
 }
 
 static void markephemeronkey(global_State *g, GCObject *o) {
-  GCObject* link = *getgclist(o);
+  lu_byte* link = (lu_byte*)*getgclist(o);
 
   lua_assert(g->gcstate == GCSatomic);
   lua_assert(isephemeronkey(o) && iswhite(o));
-  
+
   resetbit(o->marked, EPHEMERONKEYBIT);
   set2gray(o);
   while(link) {
-    if (*(lu_byte*)link == LUA_TDEADKEY) {
-      Node* n = (Node*) (((lu_byte*)link) - offsetof(Node, u.key_tt));
-      link = n->u.key_val.gc;
-      n->u.key_val.gc = o;
-      n->u.key_tt = ctb(o->tt);
+    if (*link == LUA_TDEADKEY) {
+      Node* n = (Node*) (link - offsetof(Node, u.key_tt));
+      link = (lu_byte*)keyval(n).p;
+      gckey(n) = o;
+      keytt(n) = ctb(o->tt);
+      settt_(&n->i_val, n->u.val_bak_tt);
       if (iscleared(g, gcvalueN(&n->i_val))) {
         GCObject* k = gcvalue(&n->i_val);
         if (isephemeronkey(k)) {
           resetbit(k->marked, EPHEMERONKEYBIT);
           set2gray(k);
-          *findlastephemeronkeyentry(k) = (GCObject*)&o->tt;
-          *getgclist(o) = link;
+          *findlastephemeronkeyentry(k) = &o->tt;
+          *getgclist(o) = (GCObject*)link;
           o = k;
-          link = *getgclist(o);
+          link = (lu_byte*)*getgclist(o);
         } else {
           reallymarkobject0(g, k);
         }
@@ -347,8 +348,8 @@ static void markephemeronkey(global_State *g, GCObject *o) {
     } else {
       *getgclist(o) = g->gray;
       g->gray = o;
-      o = (GCObject*) (((lu_byte*)link) - offsetof(GCObject, tt));
-      link = *getgclist(o);
+      o = (GCObject*) (link - offsetof(GCObject, tt));
+      link = (lu_byte*)*getgclist(o);
     }
   }
   *getgclist(o) = g->gray;
@@ -440,7 +441,7 @@ static int remarkupvals (global_State *g) {
 
 static void cleargraylists (global_State *g) {
   g->gray = g->grayagain = NULL;
-  g->weak = g->allweak = g->ephemeron = NULL;
+  g->weak = g->allweak = NULL;
 }
 
 
@@ -514,14 +515,16 @@ static void traverseweakvalue (global_State *g, Table *h) {
 static void linkephemeronkey(Node *n) {
   GCObject* key = gckey(n);
   GCObject** gclist = getgclist(key);
-  lua_assert(n->u.key_tt & BIT_ISCOLLECTABLE);
+  lua_assert(keytt(n) & BIT_ISCOLLECTABLE);
   if (isephemeronkey(key)) {
-    n->u.key_val.gc = *gclist;
+    keyval(n).p = *gclist;
   } else {
     l_setbit(key->marked, EPHEMERONKEYBIT);
-    n->u.key_val.gc = NULL;
+    keyval(n).p = NULL;
   }
-  *gclist = (GCObject*)&n->u.key_tt;
+  n->u.val_bak_tt = rawtt(&n->i_val);
+  settt_(&n->i_val, LUA_VNIL);
+  *gclist = (GCObject*)&keytt(n);
   setdeadkey(n);
 }
 
@@ -539,7 +542,6 @@ static void linkephemeronkey(Node *n) {
 */
 static int traverseephemeron (global_State *g, Table *h) {
   int marked = 0;  /* true if an object is marked in this traversal */
-  int maybe_dead = 1;
   unsigned int i;
   unsigned int asize = luaH_realasize(h);
   unsigned int nsize = sizenode(h);
@@ -571,30 +573,15 @@ static int traverseephemeron (global_State *g, Table *h) {
         clearkey(n);  /* clear its key */
       else if (iscleared(g, gckeyN(n))) {  /* key is not marked (yet)? */
         linkephemeronkey(n);
-        maybe_dead = 1;
       }
       else if (valiswhite(gval(n))) {  /* value not marked yet? */
         marked = 1;
         reallymarkobject(g, gcvalue(gval(n)));  /* mark it now */
       }
     }
-    if (maybe_dead) {
-      linkgclist(h, g->ephemeron);  /* must retraverse it in atomic phase */
-    } else {
-      genlink(g, obj2gco(h));  /* check whether collector still needs to see it */
-    }
+    genlink(g, obj2gco(h));  /* check whether collector still needs to see it */
   }
   return marked;
-}
-
-static void markephemerons(global_State *g) {
-  GCObject* c = g->ephemeron;
-  g->ephemeron = NULL;
-  while(c) {
-    GCObject* next = *getgclist(c);
-    traverseephemeron(g, gco2t(c));
-    c = next;
-  }
 }
 
 
@@ -1238,8 +1225,6 @@ static void correctgraylists (global_State *g) {
   list = correctgraylist(list);
   *list = g->allweak; g->allweak = NULL;
   list = correctgraylist(list);
-  *list = g->ephemeron; g->ephemeron = NULL;
-  correctgraylist(list);
 }
 
 
@@ -1576,10 +1561,9 @@ static lu_mem atomic (lua_State *L) {
   GCObject *origweak, *origall;
   GCObject *grayagain = g->grayagain;  /* save original list */
   g->grayagain = NULL;
-  lua_assert(g->ephemeron == NULL && g->weak == NULL);
+  lua_assert(g->weak == NULL);
   lua_assert(!iswhite(g->mainthread));
   g->gcstate = GCSatomic;
-  markephemerons(g);
   markobject(g, L);  /* mark running thread */
   /* registry and global metatables may be changed by API */
   markvalue(g, &g->l_registry);
@@ -1590,7 +1574,6 @@ static lu_mem atomic (lua_State *L) {
   work += propagateall(g);  /* propagate changes */
   g->gray = grayagain;
   work += propagateall(g);  /* traverse 'grayagain' list */
-  // convergeephemerons(g);
   /* at this point, all strongly accessible objects are marked. */
   /* Clear values from weak tables, before checking finalizers */
   clearbyvalues(g, g->weak, NULL);
@@ -1599,10 +1582,8 @@ static lu_mem atomic (lua_State *L) {
   separatetobefnz(g, 0);  /* separate objects to be finalized */
   work += markbeingfnz(g);  /* mark objects that will be finalized */
   work += propagateall(g);  /* remark, to propagate 'resurrection' */
-  // convergeephemerons(g);
   /* at this point, all resurrected objects are marked. */
   /* remove dead objects from weak tables */
-  clearbykeys(g, g->ephemeron);  /* clear keys from all ephemeron tables */
   clearbykeys(g, g->allweak);  /* clear keys from all 'allweak' tables */
   /* clear values from resurrected weak tables */
   clearbyvalues(g, g->weak, origweak);

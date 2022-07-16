@@ -387,7 +387,7 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud) {
   g->finobjsur = g->finobjold1 = g->finobjrold = NULL;
   g->sweepgc = NULL;
   g->gray = g->grayagain = NULL;
-  g->weak = g->ephemeron = g->allweak = NULL;
+  g->weak = g->allweak = NULL;
   g->twups = NULL;
   g->totalbytes = sizeof(LG);
   g->GCdebt = 0;

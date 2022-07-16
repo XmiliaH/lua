@@ -92,7 +92,7 @@
 
 static const Node dummynode_ = {
   {{NULL}, LUA_VEMPTY,  /* value's value and type */
-   LUA_VNIL, 0, {NULL}}  /* key type, next, and key value */
+   LUA_VNIL, 0, 0, {NULL}}  /* key type, bak, next, and key value */
 };
 
 
