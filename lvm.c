@@ -1144,6 +1144,8 @@ void luaV_finishOp (lua_State *L) {
 #define vmcase(l)	case l:
 #define vmbreak		break
 
+LUAI_FUNC int luaB_next (lua_State *L);
+LUAI_FUNC int luaB_ipairsaux (lua_State *L);
 
 void luaV_execute (lua_State *L, CallInfo *ci) {
   LClosure *cl;
@@ -1809,11 +1811,24 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
       }
       vmcase(OP_TFORPREP) {
        StkId ra = RA(i);
-        /* create to-be-closed upvalue (if needed) */
-        halfProtect(luaF_newtbcupval(L, ra + 3));
-        pc += GETARG_Bx(i);
-        i = *(pc++);  /* go to next instruction */
+        const Instruction* callpc = pc + GETARG_Bx(i);
+        i = *callpc;
         lua_assert(GET_OPCODE(i) == OP_TFORCALL && ra == RA(i));
+        if (ttypetag(s2v(ra)) == LUA_VLCF && ttistable(s2v(ra + 1)) && ttisnil(s2v(ra + 3)) && !trap && (GETARG_C(i) == 1 || GETARG_C(i) == 2)) {
+          if (fvalue(s2v(ra)) == luaB_next && ttisnil(s2v(ra + 2))) {
+            settt_(s2v(ra + 3), LUA_VITER);
+            val_(s2v(ra + 3)).it = 0;
+          } else if (fvalue(s2v(ra)) == luaB_ipairsaux && ttisinteger(s2v(ra + 2))) {
+            settt_(s2v(ra + 3), LUA_VITERI);
+          } else {
+            /* create to-be-closed upvalue (if needed) */
+            halfProtect(luaF_newtbcupval(L, ra + 3));
+          }
+        } else {
+          /* create to-be-closed upvalue (if needed) */
+          halfProtect(luaF_newtbcupval(L, ra + 3));
+        }
+        pc = callpc + 1;
         goto l_tforcall;
       }
       vmcase(OP_TFORCALL) {
@@ -1824,6 +1839,60 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
            to-be-closed variable. The call will use the stack after
            these values (starting at 'ra + 4')
         */
+        if (luai_likely(ttypetag(s2v(ra + 3)) == LUA_VITER)) {
+          if (luai_likely(!trap)) {
+            Table *t = hvalue(s2v(ra + 1));
+            unsigned int idx = val_(s2v(ra + 3)).it;
+            unsigned int asize = luaH_realasize(t);
+
+            i = *(pc++);  /* go to next instruction */
+            lua_assert(GET_OPCODE(i) == OP_TFORLOOP && ra == RA(i));
+
+            for (; idx < asize; idx++) {  /* try first array part */
+              if (luai_likely(!isempty(&t->array[idx]))) {  /* a non-empty entry? */
+                setivalue(s2v(ra + 4), idx + 1);
+                setobj2s(L, ra + 5, &t->array[idx]);
+                goto l_tforcall_found;
+              }
+            }
+            for (idx -= asize; cast_int(idx) < sizenode(t); idx++) {  /* hash part */
+              Node *n = gnode(t, idx);
+              if (luai_likely(!isempty(gval(n)))) {  /* a non-empty entry? */
+                getnodekey(L, s2v(ra + 4), n);
+                setobj2s(L, ra + 5, gval(n));
+                idx += asize;
+                goto l_tforcall_found;
+              }
+            }
+            vmbreak;
+           l_tforcall_found:
+            val_(s2v(ra + 3)).it = idx + 1;
+            setobjs2s(L, ra + 2, ra + 4);  /* save control variable */
+            pc -= GETARG_Bx(i);  /* jump back */
+            vmbreak;
+          }
+          setnilvalue(s2v(ra + 3));
+        } else if (luai_likely(ttypetag(s2v(ra + 3)) == LUA_VITERI)) {
+          if (luai_likely(!trap)) {
+            /* No check for type as LUA_VITERI is removed in case of debug setlocal. */
+            Table *t = hvalue(s2v(ra + 1));
+            lua_Integer n = ivalue(s2v(ra + 2));
+            const TValue *slot;
+            n = intop(+, n, 1);
+            slot = luai_likely(l_castS2U(n) - 1 < t->alimit) ? &t->array[n - 1] : luaH_getint(t, n);
+            if (luai_likely(!isempty(slot))) {
+              setobj2s(L, ra + 5, slot);
+              chgivalue(s2v(ra + 2), n);
+              i = *(pc++);  /* go to next instruction */
+              lua_assert(GET_OPCODE(i) == OP_TFORLOOP && ra == RA(i));
+              setobjs2s(L, ra + 4, ra + 2);  /* save control variable */
+              pc -= GETARG_Bx(i);  /* jump back */
+              vmbreak;
+            }
+          } else {
+            setnilvalue(s2v(ra + 3));
+          }
+        }
         /* push function, state, and control variable */
         memcpy(ra + 4, ra, 3 * sizeof(*ra));
         L->top = ra + 4 + 3;
