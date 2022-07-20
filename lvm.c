@@ -44,11 +44,6 @@
 #endif
 
 
-
-/* limit for table tag-method chains (to avoid infinite loops) */
-#define MAXTAGLOOP	2000
-
-
 /*
 ** 'l_intfitsf' checks whether a given integer is in the range that
 ** can be converted to a float without rounding. Used in comparisons.
@@ -279,6 +274,17 @@ static int floatforloop (StkId ra) {
 }
 
 
+static Table *getmetatable (lua_State *L, const TValue *o) {
+  switch (ttype(o)) {
+    case LUA_TTABLE:
+      return hvalue(o)->metatable;
+    case LUA_TUSERDATA:
+      return uvalue(o)->metatable;
+    default:
+      return G(L)->mt[ttype(o)];
+  }
+}
+
 /*
 ** Finish the table access 'val = t[key]'.
 ** if 'slot' is NULL, 't' is not a table; otherwise, 'slot' points to
@@ -286,37 +292,42 @@ static int floatforloop (StkId ra) {
 */
 void luaV_finishget (lua_State *L, const TValue *t, TValue *key, StkId val,
                       const TValue *slot) {
-  int loop;  /* counter to avoid infinite loops */
+  int step;
   const TValue *tm;  /* metamethod */
-  for (loop = 0; loop < MAXTAGLOOP; loop++) {
-    if (slot == NULL) {  /* 't' is not a table? */
-      lua_assert(!ttistable(t));
-      tm = luaT_gettmbyobj(L, t, TM_INDEX);
-      if (l_unlikely(notm(tm)))
-        luaG_typeerror(L, t, "index");  /* no metamethod */
-      /* else will try the metamethod */
-    }
-    else {  /* 't' is a table */
-      lua_assert(isempty(slot));
-      tm = fasttm(L, hvalue(t)->metatable, TM_INDEX);  /* table's metamethod */
-      if (tm == NULL) {  /* no metamethod? */
+  struct Table* mt, *find_loop;
+
+  mt = getmetatable(L, t);
+  find_loop = mt;
+
+  for (;;) {
+    for (step = 0; step <= 1; step++) {
+      tm = fasttm(L, mt, TM_INDEX);
+      if (tm == NULL) {
+        if (l_unlikely(slot == NULL)) {
+          lua_assert(!ttistable(t));
+          luaG_typeerror(L, t, "index");  /* no metamethod */
+        }
+        lua_assert(isempty(slot));
         setnilvalue(s2v(val));  /* result is nil */
         return;
       }
-      /* else will try the metamethod */
+      if (ttisfunction(tm)) {  /* is metamethod a function? */
+        luaT_callTMres(L, tm, t, key, val);  /* call it */
+        return;
+      }
+      t = tm;  /* else try to access 'tm[key]' */
+      if (luaV_fastget(L, t, key, slot, luaH_get)) {  /* fast track? */
+        setobj2s(L, val, slot);  /* done */
+        return;
+      }
+
+      mt = getmetatable(L, t);
+      if (l_unlikely(mt == find_loop))
+        luaG_runerror(L, "'__index' chain loop");
     }
-    if (ttisfunction(tm)) {  /* is metamethod a function? */
-      luaT_callTMres(L, tm, t, key, val);  /* call it */
-      return;
-    }
-    t = tm;  /* else try to access 'tm[key]' */
-    if (luaV_fastget(L, t, key, slot, luaH_get)) {  /* fast track? */
-      setobj2s(L, val, slot);  /* done */
-      return;
-    }
-    /* else repeat (tail call 'luaV_finishget') */
+
+    find_loop = getmetatable(L, luaH_getshortstr(find_loop, G(L)->tmname[TM_INDEX]));
   }
-  luaG_runerror(L, "'__index' chain too long; possible loop");
 }
 
 
@@ -329,39 +340,44 @@ void luaV_finishget (lua_State *L, const TValue *t, TValue *key, StkId val,
 */
 void luaV_finishset (lua_State *L, const TValue *t, TValue *key,
                      TValue *val, const TValue *slot) {
-  int loop;  /* counter to avoid infinite loops */
-  for (loop = 0; loop < MAXTAGLOOP; loop++) {
-    const TValue *tm;  /* '__newindex' metamethod */
-    if (slot != NULL) {  /* is 't' a table? */
-      Table *h = hvalue(t);  /* save 't' table */
-      lua_assert(isempty(slot));  /* slot must be empty */
-      tm = fasttm(L, h->metatable, TM_NEWINDEX);  /* get metamethod */
-      if (tm == NULL) {  /* no metamethod? */
+  int step;
+  const TValue *tm;
+  struct Table* mt, *find_loop, *h;
+
+  mt = getmetatable(L, t);
+  find_loop = mt;
+
+  for(;;) {
+    for (step = 0; step <= 1; step++) {
+      tm = fasttm(L, mt, TM_NEWINDEX);
+      if (tm == NULL) {
+        if (l_unlikely(slot == NULL)) {
+          lua_assert(!ttistable(t));
+          luaG_typeerror(L, t, "index");  /* no metamethod */
+        }
+        lua_assert(isempty(slot));
+        h = hvalue(t);
         luaH_finishset(L, h, key, slot, val);  /* set new value */
         invalidateTMcache(h);
         luaC_barrierback(L, obj2gco(h), val);
         return;
       }
-      /* else will try the metamethod */
+      if (ttisfunction(tm)) {
+        luaT_callTM(L, tm, t, key, val);
+        return;
+      }
+      t = tm;  /* else repeat assignment over 'tm' */
+      if (luaV_fastget(L, t, key, slot, luaH_get)) {
+        luaV_finishfastset(L, t, slot, val);
+        return;  /* done */
+      }
+      mt = getmetatable(L, t);
+      if (l_unlikely(mt == find_loop))
+        luaG_runerror(L, "'__newindex' chain loop");
     }
-    else {  /* not a table; check metamethod */
-      tm = luaT_gettmbyobj(L, t, TM_NEWINDEX);
-      if (l_unlikely(notm(tm)))
-        luaG_typeerror(L, t, "index");
-    }
-    /* try the metamethod */
-    if (ttisfunction(tm)) {
-      luaT_callTM(L, tm, t, key, val);
-      return;
-    }
-    t = tm;  /* else repeat assignment over 'tm' */
-    if (luaV_fastget(L, t, key, slot, luaH_get)) {
-      luaV_finishfastset(L, t, slot, val);
-      return;  /* done */
-    }
-    /* else 'return luaV_finishset(L, t, key, val, slot)' (loop) */
+
+    find_loop = getmetatable(L, luaH_getshortstr(find_loop, G(L)->tmname[TM_NEWINDEX]));
   }
-  luaG_runerror(L, "'__newindex' chain too long; possible loop");
 }
 
 
