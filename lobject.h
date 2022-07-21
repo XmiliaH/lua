@@ -282,6 +282,10 @@ typedef struct GCObject {
   CommonHeader;
 } GCObject;
 
+typedef union GCList {
+  GCObject* gc;
+  void* ephemeron_list;
+} GCList;
 
 /* Bit mark for collectable types */
 #define BIT_ISCOLLECTABLE	(1 << 6)
@@ -452,7 +456,7 @@ typedef struct Udata {
   unsigned short nuvalue;  /* number of user values */
   size_t len;  /* number of bytes */
   struct Table *metatable;
-  GCObject *gclist;
+  GCList gclist;
   UValue uv[1];  /* user values */
 } Udata;
 
@@ -541,7 +545,7 @@ typedef struct Proto {
   AbsLineInfo *abslineinfo;  /* idem */
   LocVar *locvars;  /* information about local variables (debug information) */
   TString  *source;  /* used for debug information */
-  GCObject *gclist;
+  GCList gclist;
 } Proto;
 
 /* }================================================================== */
@@ -612,7 +616,7 @@ typedef struct UpVal {
 
 
 #define ClosureHeader \
-	CommonHeader; lu_byte nupvalues; GCObject *gclist
+	CommonHeader; lu_byte nupvalues; GCList gclist
 
 typedef struct CClosure {
   ClosureHeader;
@@ -714,7 +718,7 @@ typedef struct Table {
   Node *node;
   Node *lastfree;  /* any free position is before this position */
   struct Table *metatable;
-  GCObject *gclist;
+  GCList gclist;
 } Table;
 
 

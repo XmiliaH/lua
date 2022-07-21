@@ -122,7 +122,7 @@ static void entersweep (lua_State *L);
 #define gnodelast(h)	gnode(h, cast_sizet(sizenode(h)))
 
 
-static GCObject **getgclist (GCObject *o) {
+static GCList *getgclist (GCObject *o) {
   switch (o->tt) {
     case LUA_VTABLE: return &gco2t(o)->gclist;
     case LUA_VLCL: return &gco2lcl(o)->gclist;
@@ -141,12 +141,12 @@ static GCObject **getgclist (GCObject *o) {
 */
 #define linkgclist(o,p)	linkgclist_(obj2gco(o), &(o)->gclist, &(p))
 
-static void linkgclist_ (GCObject *o, GCObject **pnext, GCObject **list) {
+static void linkgclist_ (GCObject *o, GCList *pnext, GCObject **list) {
   lua_assert(!isgray(o));  /* cannot be in a gray list */
 #ifndef LUA_DEBUG
   lua_assert(!isephemeronkey(o));
 #endif
-  *pnext = *list;
+  pnext->gc = *list;
   *list = o;
   set2gray(o);  /* now it is */
 }
@@ -309,7 +309,7 @@ static void reallymarkobject0 (global_State *g, GCObject *o) {
 }
 
 static void** findlastephemeronkeyentry(GCObject *o) {
-  void** last = (void**)getgclist(o);
+  void** last = &getgclist(o)->ephemeron_list;
   while(*last) {
     Node* n = (Node*) (((lu_byte*)*last) - offsetof(Node, u.key_tt));
     last = &keyval(n).p;
@@ -318,7 +318,7 @@ static void** findlastephemeronkeyentry(GCObject *o) {
 }
 
 static void markephemeronkey(global_State *g, GCObject *o) {
-  lu_byte* link = (lu_byte*)*getgclist(o);
+  lu_byte* link = (lu_byte*)getgclist(o)->ephemeron_list;
 
   lua_assert(g->gcstate == GCSatomic);
   lua_assert(isephemeronkey(o) && iswhite(o));
@@ -338,21 +338,21 @@ static void markephemeronkey(global_State *g, GCObject *o) {
           resetbit(k->marked, EPHEMERONKEYBIT);
           set2gray(k);
           *findlastephemeronkeyentry(k) = &o->tt;
-          *getgclist(o) = (GCObject*)link;
+          getgclist(o)->ephemeron_list = link;
           o = k;
-          link = (lu_byte*)*getgclist(o);
+          link = (lu_byte*)getgclist(o)->ephemeron_list;
         } else {
           reallymarkobject0(g, k);
         }
       }
     } else {
-      *getgclist(o) = g->gray;
+      getgclist(o)->gc = g->gray;
       g->gray = o;
       o = (GCObject*) (link - offsetof(GCObject, tt));
-      link = (lu_byte*)*getgclist(o);
+      link = (lu_byte*)getgclist(o)->ephemeron_list;
     }
   }
-  *getgclist(o) = g->gray;
+  getgclist(o)->gc = g->gray;
   g->gray = o;
 }
 
@@ -514,17 +514,17 @@ static void traverseweakvalue (global_State *g, Table *h) {
 
 static void linkephemeronkey(Node *n) {
   GCObject* key = gckey(n);
-  GCObject** gclist = getgclist(key);
+  GCList* gclist = getgclist(key);
   lua_assert(keytt(n) & BIT_ISCOLLECTABLE);
   if (isephemeronkey(key)) {
-    keyval(n).p = *gclist;
+    keyval(n).p = gclist->ephemeron_list;
   } else {
     l_setbit(key->marked, EPHEMERONKEYBIT);
     keyval(n).p = NULL;
   }
   n->u.val_bak_tt = rawtt(&n->i_val);
   settt_(&n->i_val, LUA_VNIL);
-  *gclist = (GCObject*)&keytt(n);
+  gclist->ephemeron_list = &keytt(n);
   setdeadkey(n);
 }
 
@@ -724,7 +724,7 @@ static int traversethread (global_State *g, lua_State *th) {
 static lu_mem propagatemark (global_State *g) {
   GCObject *o = g->gray;
   nw2black(o);
-  g->gray = *getgclist(o);  /* remove from 'gray' list */
+  g->gray = getgclist(o)->gc;  /* remove from 'gray' list */
   switch (o->tt) {
     case LUA_VTABLE: return traversetable(g, gco2t(o));
     case LUA_VUSERDATA: return traverseudata(g, gco2u(o));
@@ -758,7 +758,7 @@ static lu_mem propagateall (global_State *g) {
 ** clear entries with unmarked keys from all weaktables in list 'l'
 */
 static void clearbykeys (global_State *g, GCObject *l) {
-  for (; l; l = gco2t(l)->gclist) {
+  for (; l; l = gco2t(l)->gclist.gc) {
     Table *h = gco2t(l);
     Node *limit = gnodelast(h);
     Node *n;
@@ -777,7 +777,7 @@ static void clearbykeys (global_State *g, GCObject *l) {
 ** to element 'f'
 */
 static void clearbyvalues (global_State *g, GCObject *l, GCObject *f) {
-  for (; l != f; l = gco2t(l)->gclist) {
+  for (; l != f; l = gco2t(l)->gclist.gc) {
     Table *h = gco2t(l);
     Node *n, *limit = gnodelast(h);
     unsigned int i;
@@ -1189,7 +1189,7 @@ static void whitelist (global_State *g, GCObject *p) {
 static GCObject **correctgraylist (GCObject **p) {
   GCObject *curr;
   while ((curr = *p) != NULL) {
-    GCObject **next = getgclist(curr);
+    GCList *next = getgclist(curr);
     if (iswhite(curr))
       goto remove;  /* remove all white objects */
     else if (getage(curr) == G_TOUCHED1) {  /* touched in this cycle? */
@@ -1209,8 +1209,8 @@ static GCObject **correctgraylist (GCObject **p) {
       nw2black(curr);  /* make object black (to be removed) */
       goto remove;
     }
-    remove: *p = *next; continue;
-    remain: p = next; continue;
+    remove: *p = next->gc; continue;
+    remain: p = &next->gc; continue;
   }
   return p;
 }

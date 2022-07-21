@@ -541,14 +541,14 @@ static lu_mem checkgraylist (global_State *g, GCObject *o) {
       l_setbit(o->marked, TESTBIT);  /* mark that object is in a gray list */
     total++;
     switch (o->tt) {
-      case LUA_VTABLE: o = gco2t(o)->gclist; break;
-      case LUA_VLCL: o = gco2lcl(o)->gclist; break;
-      case LUA_VCCL: o = gco2ccl(o)->gclist; break;
-      case LUA_VTHREAD: o = gco2th(o)->gclist; break;
-      case LUA_VPROTO: o = gco2p(o)->gclist; break;
+      case LUA_VTABLE: o = gco2t(o)->gclist.gc; break;
+      case LUA_VLCL: o = gco2lcl(o)->gclist.gc; break;
+      case LUA_VCCL: o = gco2ccl(o)->gclist.gc; break;
+      case LUA_VTHREAD: o = gco2th(o)->gclist.gc; break;
+      case LUA_VPROTO: o = gco2p(o)->gclist.gc; break;
       case LUA_VUSERDATA:
         assert(gco2u(o)->nuvalue > 0);
-        o = gco2u(o)->gclist;
+        o = gco2u(o)->gclist.gc;
         break;
       default: assert(0);  /* other objects cannot be in a gray list */
     }
